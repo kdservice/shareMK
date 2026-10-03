@@ -1,8 +1,11 @@
 # shareMK
 
-shareMK は、Mac を Bluetooth HID キーボード/マウスとして見せ、Windows や Linux に入力を送る macOS メニューバーアプリです。
+shareMK は、UB500等RTL8761BU搭載ドングルを挿した Mac を Bluetooth HID キーボード/マウスとして見せ、Windows や Linux に入力を送る macOS メニューバーアプリです。
 
-現時点では、Mac に挿した TP-Link UB500 を直接制御する前提の実験的な実装です。
+特徴はBTなのでネットワーク越し制御や、専用ソフトを必要としないところです。
+
+他に、このペアリングPCにはマウスしか共有しないなどの設定が出来るので、切り替えてマウスだけペアリングPCの横に持っていって使う、みたいな運用が出来ます。
+
 
 ## 事前準備
 
@@ -70,4 +73,3 @@ shareMK 本体は MIT License です。詳しくは `LICENSE` を参照してく
 - `THIRD_PARTY_NOTICES.md`
 - `.gitignore`
 
-診断用コード、テスト用コード、ローカルビルド生成物、古い実装メモは含めていません。
