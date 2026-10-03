@@ -18,6 +18,7 @@ final class InputCapture {
     private var retryTimer: Timer?
     private var permissionPromptRequested = false
     private var childMode = false
+    private var outputMode: OutputMode = .both
     private var suppressModifiersUntilReleased = false
 
     func start() {
@@ -99,6 +100,11 @@ final class InputCapture {
         }
     }
 
+    func reloadHotKeys() {
+        uninstallHotKeys()
+        installHotKeys()
+    }
+
     private func installHotKeys() {
         guard hotKeyRefs.isEmpty else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -124,13 +130,13 @@ final class InputCapture {
             return noErr
         }, 1, &eventType, refcon, &hotKeyHandler)
 
-        let keyCodes: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29]
-        for (index, keyCode) in keyCodes.enumerated() {
+        let bindings = hotKeyBindings()
+        for binding in bindings {
             var hotKeyRef: EventHotKeyRef?
-            let hotKeyID = EventHotKeyID(signature: OSType(0x534D4B48), id: UInt32(index + 1))
+            let hotKeyID = EventHotKeyID(signature: OSType(0x534D4B48), id: UInt32(binding.slot))
             let status = RegisterEventHotKey(
-                keyCode,
-                UInt32(controlKey | optionKey | cmdKey),
+                binding.keyCode,
+                binding.modifiers,
                 hotKeyID,
                 GetApplicationEventTarget(),
                 0,
@@ -139,10 +145,10 @@ final class InputCapture {
             if status == noErr, let hotKeyRef {
                 hotKeyRefs.append(hotKeyRef)
             } else {
-                onDiagnostic?("HOTKEY_REGISTER_FAILED slot=\(index + 1) status=\(status)")
+                onDiagnostic?("HOTKEY_REGISTER_FAILED slot=\(binding.slot) status=\(status)")
             }
         }
-        onDiagnostic?("HOTKEY_REGISTERED count=\(hotKeyRefs.count)")
+        onDiagnostic?("HOTKEY_REGISTERED mode=\(AppSettings.shared.hotKeyMode.rawValue) count=\(hotKeyRefs.count)")
     }
 
     private func uninstallHotKeys() {
@@ -156,9 +162,10 @@ final class InputCapture {
         hotKeyHandler = nil
     }
 
-    func setChildMode(_ enabled: Bool) {
+    func setChildMode(_ enabled: Bool, outputMode: OutputMode = .both) {
         childMode = enabled
-        suppressModifiersUntilReleased = enabled
+        self.outputMode = outputMode
+        suppressModifiersUntilReleased = enabled && outputMode.sendsKeyboard
         inputState.reset()
         onKeyboard?(HIDKeyboardReport())
         onMouseButton?(HIDMouseReport())
@@ -194,47 +201,58 @@ final class InputCapture {
 
         switch type {
         case .keyDown:
+            guard outputMode.sendsKeyboard else { return Unmanaged.passUnretained(event) }
             inputState.updateFlags(event.flags, swapCommandAndControl: AppSettings.shared.swapCommandAndControl)
             inputState.keyDown(macKeyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)))
             onKeyboard?(inputState.keyboardReport)
             return nil
         case .keyUp:
+            guard outputMode.sendsKeyboard else { return Unmanaged.passUnretained(event) }
             inputState.updateFlags(event.flags, swapCommandAndControl: AppSettings.shared.swapCommandAndControl)
             inputState.keyUp(macKeyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)))
             onKeyboard?(inputState.keyboardReport)
             return nil
         case .flagsChanged:
+            guard outputMode.sendsKeyboard else { return Unmanaged.passUnretained(event) }
             inputState.updateFlags(event.flags, swapCommandAndControl: AppSettings.shared.swapCommandAndControl)
             onKeyboard?(inputState.keyboardReport)
             return nil
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             onMouse?(inputState.mouseButtons, event.getIntegerValueField(.mouseEventDeltaX), event.getIntegerValueField(.mouseEventDeltaY), 0)
             return nil
         case .leftMouseDown:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x01, pressed: true)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .leftMouseUp:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x01, pressed: false)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .rightMouseDown:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x02, pressed: true)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .rightMouseUp:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x02, pressed: false)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .otherMouseDown:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x04, pressed: true)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .otherMouseUp:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             inputState.setMouseButton(0x04, pressed: false)
             onMouseButton?(inputState.mouseReport(dx: 0, dy: 0, wheel: 0))
             return nil
         case .scrollWheel:
+            guard outputMode.sendsMouse else { return Unmanaged.passUnretained(event) }
             onMouse?(inputState.mouseButtons, 0, 0, event.getIntegerValueField(.scrollWheelEventDeltaAxis1))
             return nil
         default:
@@ -242,27 +260,69 @@ final class InputCapture {
         }
     }
 
+    private func hotKeyBindings() -> [(slot: Int, keyCode: UInt32, modifiers: UInt32)] {
+        switch AppSettings.shared.hotKeyMode {
+        case .controlOptionCommandNumber:
+            return [18, 19, 20, 21, 23, 22, 26, 28, 25, 29].enumerated().map {
+                (slot: $0.offset + 1, keyCode: UInt32($0.element), modifiers: UInt32(controlKey | optionKey | cmdKey))
+            }
+        case .controlCommandFunction:
+            return [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12].enumerated().map {
+                (slot: $0.offset + 1, keyCode: UInt32($0.element), modifiers: UInt32(controlKey | cmdKey))
+            }
+        }
+    }
+
     private func isSwitchHotkey(event: CGEvent) -> Bool {
-        event.flags.contains(.maskControl) && event.flags.contains(.maskAlternate) && event.flags.contains(.maskCommand)
+        switch AppSettings.shared.hotKeyMode {
+        case .controlOptionCommandNumber:
+            event.flags.contains(.maskControl) && event.flags.contains(.maskAlternate) && event.flags.contains(.maskCommand)
+        case .controlCommandFunction:
+            event.flags.contains(.maskControl) && event.flags.contains(.maskCommand) && !event.flags.contains(.maskAlternate)
+        }
     }
 
     private func hasSwitchModifiers(_ flags: CGEventFlags) -> Bool {
-        flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskCommand)
+        switch AppSettings.shared.hotKeyMode {
+        case .controlOptionCommandNumber:
+            flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskCommand)
+        case .controlCommandFunction:
+            flags.contains(.maskControl) || flags.contains(.maskCommand)
+        }
     }
 
     private func switchSlot(for keyCode: Int) -> Int? {
-        switch keyCode {
-        case 18: return 1
-        case 19: return 2
-        case 20: return 3
-        case 21: return 4
-        case 23: return 5
-        case 22: return 6
-        case 26: return 7
-        case 28: return 8
-        case 25: return 9
-        case 29: return 10
-        default: return nil
+        switch AppSettings.shared.hotKeyMode {
+        case .controlOptionCommandNumber:
+            switch keyCode {
+            case 18: return 1
+            case 19: return 2
+            case 20: return 3
+            case 21: return 4
+            case 23: return 5
+            case 22: return 6
+            case 26: return 7
+            case 28: return 8
+            case 25: return 9
+            case 29: return 10
+            default: return nil
+            }
+        case .controlCommandFunction:
+            switch keyCode {
+            case kVK_F1: return 1
+            case kVK_F2: return 2
+            case kVK_F3: return 3
+            case kVK_F4: return 4
+            case kVK_F5: return 5
+            case kVK_F6: return 6
+            case kVK_F7: return 7
+            case kVK_F8: return 8
+            case kVK_F9: return 9
+            case kVK_F10: return 10
+            case kVK_F11: return 11
+            case kVK_F12: return 12
+            default: return nil
+            }
         }
     }
 }

@@ -1,20 +1,28 @@
 import AppKit
+import ApplicationServices
 
 @MainActor
 final class SettingsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     var onDeletePairing: ((String) -> Void)?
     var onReconnect: ((String) -> Void)?
     var onNameChanged: (() -> Void)?
+    var onAppSettingsChanged: (() -> Void)?
 
     private let tableView = NSTableView()
     private let leftScrollView = NSScrollView()
     private let nameField = NSTextField(string: "")
     private let addressValue = NSTextField(labelWithString: "")
     private let statusValue = NSTextField(labelWithString: "")
+    private let outputModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let mouseScaleField = NSTextField(string: "")
     private let mouseClampField = NSTextField(string: "")
     private let mouseCoalesceField = NSTextField(string: "")
     private let swapCheckbox = NSButton(checkboxWithTitle: "CommandキーとControlキーを入れ替える", target: nil, action: nil)
+    private let hotKeyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let permissionStateValue = NSTextField(labelWithString: "")
+    private let requestAccessibilityButton = NSButton(title: "アクセシビリティを再認証", target: nil, action: nil)
+    private let requestInputMonitoringButton = NSButton(title: "入力監視を再認証", target: nil, action: nil)
+    private let openPrivacyButton = NSButton(title: "システム設定を開く", target: nil, action: nil)
     private let deleteButton = NSButton(title: "ペアリング削除", target: nil, action: nil)
     private let reconnectButton = NSButton(title: "再接続", target: nil, action: nil)
     private var deviceColumn: NSTableColumn?
@@ -25,13 +33,13 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 860, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "shareMK 設定"
-        window.minSize = NSSize(width: 780, height: 460)
+        window.minSize = NSSize(width: 820, height: 500)
         super.init(window: window)
         buildUI()
     }
@@ -54,6 +62,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
             tableView.deselectAll(nil)
         }
         updateSelectionUI()
+        updateAppSettingsUI()
     }
 
     override func showWindow(_ sender: Any?) {
@@ -64,6 +73,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         }
         updateSelectionUI()
+        updateAppSettingsUI()
     }
 
     private var selectedAddress: String? {
@@ -74,7 +84,32 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
 
     private func buildUI() {
         guard let content = window?.contentView else { return }
+        let tabs = NSTabView()
+        tabs.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tabs)
+        NSLayoutConstraint.activate([
+            tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            tabs.topAnchor.constraint(equalTo: content.topAnchor),
+            tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ])
 
+        let devicesView = NSView()
+        let appView = NSView()
+        let devicesTab = NSTabViewItem(identifier: "devices")
+        devicesTab.label = "接続先"
+        devicesTab.view = devicesView
+        let appTab = NSTabViewItem(identifier: "app")
+        appTab.label = "アプリ設定"
+        appTab.view = appView
+        tabs.addTabViewItem(devicesTab)
+        tabs.addTabViewItem(appTab)
+
+        buildDevicesTab(devicesView)
+        buildAppTab(appView)
+    }
+
+    private func buildDevicesTab(_ content: NSView) {
         let split = NSSplitView()
         split.translatesAutoresizingMaskIntoConstraints = false
         split.isVertical = true
@@ -97,7 +132,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
 
         buildLeftPane(left)
-        buildRightPane(right)
+        buildDeviceDetail(right)
         split.setPosition(320, ofDividerAt: 0)
     }
 
@@ -154,84 +189,125 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         ])
     }
 
-    private func buildRightPane(_ right: NSView) {
+    private func buildDeviceDetail(_ right: NSView) {
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        right.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: right.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: right.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: right.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: right.bottomAnchor)
+        ])
+
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
+
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 14
-        right.addSubview(stack)
+        document.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: right.leadingAnchor, constant: 32),
-            stack.trailingAnchor.constraint(equalTo: right.trailingAnchor, constant: -32),
-            stack.topAnchor.constraint(equalTo: right.topAnchor, constant: 32)
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor, constant: -32),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 28),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor, constant: -28)
         ])
 
-        let connectionTitle = sectionTitle("接続")
-        stack.addArrangedSubview(connectionTitle)
-        detailViews.append(connectionTitle)
-
-        stack.addArrangedSubview(row(label: "表示名", control: nameField))
+        addDetail(stack, sectionTitle("接続"))
+        addDetail(stack, row(label: "表示名", control: nameField))
         nameField.delegate = self
         nameField.target = self
         nameField.action = #selector(nameEdited)
         nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
-        detailViews.append(nameField)
 
-        stack.addArrangedSubview(row(label: "アドレス", control: addressValue))
+        addDetail(stack, row(label: "アドレス", control: addressValue))
         addressValue.textColor = .secondaryLabelColor
-        detailViews.append(addressValue)
+        addDetail(stack, row(label: "状態", control: statusValue))
 
-        stack.addArrangedSubview(row(label: "状態", control: statusValue))
-        detailViews.append(statusValue)
+        outputModePopup.addItems(withTitles: OutputMode.allCases.map(\.title))
+        outputModePopup.target = self
+        outputModePopup.action = #selector(outputModeChanged)
+        addDetail(stack, row(label: "出力対象", control: outputModePopup))
 
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        stack.addArrangedSubview(spacer)
-        detailViews.append(spacer)
-
-        let keyTitle = sectionTitle("キー設定")
-        stack.addArrangedSubview(keyTitle)
-        detailViews.append(keyTitle)
-
+        addDetail(stack, spacer(height: 12))
+        addDetail(stack, sectionTitle("キー設定"))
         swapCheckbox.state = AppSettings.shared.swapCommandAndControl ? .on : .off
         swapCheckbox.target = self
         swapCheckbox.action = #selector(toggleSwap)
-        stack.addArrangedSubview(swapCheckbox)
-        detailViews.append(swapCheckbox)
+        addDetail(stack, swapCheckbox)
+        addDetail(stack, helpLabel("この設定は選択中の接続先にキーボードを送る場合だけ効きます。"))
 
-        let help = NSTextField(wrappingLabelWithString: "Windows側でCommand/Ctrlの扱いが合わない場合に切り替えてください。今後のキー割り当て設定もここへ追加します。")
-        help.textColor = .secondaryLabelColor
-        help.maximumNumberOfLines = 3
-        stack.addArrangedSubview(help)
-        detailViews.append(help)
-
-        let mouseSpacer = NSView()
-        mouseSpacer.translatesAutoresizingMaskIntoConstraints = false
-        mouseSpacer.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        stack.addArrangedSubview(mouseSpacer)
-        detailViews.append(mouseSpacer)
-
-        let mouseTitle = sectionTitle("マウス設定")
-        stack.addArrangedSubview(mouseTitle)
-        detailViews.append(mouseTitle)
-
+        addDetail(stack, spacer(height: 12))
+        addDetail(stack, sectionTitle("マウス設定"))
         configureNumberField(mouseScaleField)
-        stack.addArrangedSubview(row(label: "移動倍率", control: mouseScaleField))
-
+        addDetail(stack, row(label: "移動倍率", control: mouseScaleField))
         configureNumberField(mouseClampField)
-        stack.addArrangedSubview(row(label: "上限", control: mouseClampField))
-
+        addDetail(stack, row(label: "上限", control: mouseClampField))
         configureNumberField(mouseCoalesceField)
-        stack.addArrangedSubview(row(label: "合成間隔ms", control: mouseCoalesceField))
+        addDetail(stack, row(label: "合成間隔ms", control: mouseCoalesceField))
+        addDetail(stack, helpLabel("Windowsで遅延や急な移動が出る場合は、移動倍率を下げる、合成間隔msを小さくする、上限を下げる順で調整してください。"))
+    }
 
-        let mouseHelp = NSTextField(wrappingLabelWithString: "Windowsで遅延や急な移動が出る場合は、移動倍率を下げる、合成間隔msを小さくする、上限を下げる順で調整してください。")
-        mouseHelp.textColor = .secondaryLabelColor
-        mouseHelp.maximumNumberOfLines = 3
-        stack.addArrangedSubview(mouseHelp)
-        detailViews.append(mouseHelp)
+    private func buildAppTab(_ content: NSView) {
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        content.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ])
+
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 16
+        document.addSubview(stack)
+        NSLayoutConstraint.activate([
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor, constant: -32),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 28),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor, constant: -28)
+        ])
+
+        stack.addArrangedSubview(sectionTitle("切替ホットキー"))
+        hotKeyPopup.addItems(withTitles: HotKeyMode.allCases.map(\.title))
+        hotKeyPopup.target = self
+        hotKeyPopup.action = #selector(hotKeyModeChanged)
+        stack.addArrangedSubview(row(label: "方式", control: hotKeyPopup))
+        stack.addArrangedSubview(helpLabel("1番がMac、2番以降がメニュー順の接続先です。ホットキー方式を変えると即時に再登録します。"))
+
+        stack.addArrangedSubview(spacer(height: 12))
+        stack.addArrangedSubview(sectionTitle("権限"))
+        stack.addArrangedSubview(row(label: "状態", control: permissionStateValue))
+        requestAccessibilityButton.target = self
+        requestAccessibilityButton.action = #selector(requestAccessibilityPermission)
+        requestInputMonitoringButton.target = self
+        requestInputMonitoringButton.action = #selector(requestInputMonitoringPermission)
+        openPrivacyButton.target = self
+        openPrivacyButton.action = #selector(openPrivacySettings)
+        stack.addArrangedSubview(buttonRow([requestAccessibilityButton, requestInputMonitoringButton, openPrivacyButton]))
+        stack.addArrangedSubview(helpLabel("macOSの制約により、許可済みの項目で確認ダイアログが再表示されない場合があります。"))
+    }
+
+    private func addDetail(_ stack: NSStackView, _ view: NSView) {
+        stack.addArrangedSubview(view)
+        detailViews.append(view)
     }
 
     private func configureNumberField(_ field: NSTextField) {
@@ -247,6 +323,28 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         return field
     }
 
+    private func spacer(height: CGFloat) -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return view
+    }
+
+    private func helpLabel(_ text: String) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.textColor = .secondaryLabelColor
+        field.maximumNumberOfLines = 4
+        field.preferredMaxLayoutWidth = 480
+        return field
+    }
+
+    private func buttonRow(_ buttons: [NSButton]) -> NSView {
+        let row = NSStackView(views: buttons)
+        row.orientation = .horizontal
+        row.spacing = 12
+        return row
+    }
+
     private func row(label: String, control: NSView) -> NSView {
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -257,15 +355,15 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         row.addSubview(control)
         NSLayoutConstraint.activate([
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
+            row.widthAnchor.constraint(greaterThanOrEqualToConstant: 520),
             labelView.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             labelView.centerYAnchor.constraint(equalTo: control.centerYAnchor),
-            labelView.widthAnchor.constraint(equalToConstant: 90),
+            labelView.widthAnchor.constraint(equalToConstant: 110),
             control.leadingAnchor.constraint(equalTo: labelView.trailingAnchor, constant: 20),
             control.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor),
             control.topAnchor.constraint(equalTo: row.topAnchor),
             control.bottomAnchor.constraint(equalTo: row.bottomAnchor)
         ])
-        detailViews.append(row)
         return row
     }
 
@@ -295,6 +393,38 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
 
     @objc private func toggleSwap() {
         AppSettings.shared.swapCommandAndControl = swapCheckbox.state == .on
+    }
+
+    @objc private func outputModeChanged() {
+        guard let selectedAddress else { return }
+        let index = outputModePopup.indexOfSelectedItem
+        guard OutputMode.allCases.indices.contains(index) else { return }
+        AppSettings.shared.setOutputMode(OutputMode.allCases[index], for: selectedAddress)
+        onAppSettingsChanged?()
+    }
+
+    @objc private func hotKeyModeChanged() {
+        let index = hotKeyPopup.indexOfSelectedItem
+        guard HotKeyMode.allCases.indices.contains(index) else { return }
+        AppSettings.shared.hotKeyMode = HotKeyMode.allCases[index]
+        onAppSettingsChanged?()
+    }
+
+    @objc private func requestAccessibilityPermission() {
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        updateAppSettingsUI()
+    }
+
+    @objc private func requestInputMonitoringPermission() {
+        _ = CGRequestListenEventAccess()
+        updateAppSettingsUI()
+    }
+
+    @objc private func openPrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc private func nameEdited() { saveName() }
@@ -368,9 +498,20 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         addressValue.stringValue = selectedAddress
         statusValue.stringValue = connected.contains(selectedAddress) ? "接続済み" : "未接続"
         statusValue.textColor = connected.contains(selectedAddress) ? .labelColor : .secondaryLabelColor
+        let outputMode = AppSettings.shared.outputMode(for: selectedAddress)
+        outputModePopup.selectItem(at: OutputMode.allCases.firstIndex(of: outputMode) ?? 0)
         let mouse = AppSettings.shared.mouseSettings(for: selectedAddress)
         mouseScaleField.stringValue = formatScale(mouse.scale)
         mouseClampField.integerValue = mouse.clamp
         mouseCoalesceField.integerValue = mouse.coalesceMilliseconds
+    }
+
+    private func updateAppSettingsUI() {
+        let hotKeyMode = AppSettings.shared.hotKeyMode
+        hotKeyPopup.selectItem(at: HotKeyMode.allCases.firstIndex(of: hotKeyMode) ?? 0)
+        let accessibility = AXIsProcessTrusted()
+        let listen = CGPreflightListenEventAccess()
+        permissionStateValue.stringValue = "アクセシビリティ: \(accessibility ? "許可済み" : "未許可") / 入力監視: \(listen ? "許可済み" : "未許可")"
+        permissionStateValue.textColor = (accessibility && listen) ? .labelColor : .systemRed
     }
 }

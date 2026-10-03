@@ -69,6 +69,7 @@ final class StatusBarApp: NSObject, NSApplicationDelegate {
     private var connectedPeers: Set<String> = []
     private var hidReadyPeers: Set<String> = []
     private var selectedPeer: String?
+    private var selectedPeerWasHIDReady = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "io.github.sharemk.shareMK")
@@ -99,20 +100,28 @@ final class StatusBarApp: NSObject, NSApplicationDelegate {
         settingsWindow.onNameChanged = { [weak self] in
             self?.updateMenu(peers: self?.peers ?? [], status: "設定更新")
         }
+        settingsWindow.onAppSettingsChanged = { [weak self] in
+            self?.inputCapture?.reloadHotKeys()
+            self?.refreshInputModeForSelectedPeer()
+            self?.updateMenu(peers: self?.peers ?? [], status: "設定更新")
+        }
         inputCapture = InputCapture()
         inputCapture.onSwitch = { [weak self] slot in self?.switchToSlot(slot) }
         inputCapture.onKeyboard = { [weak self] report in
             guard let self, let selectedPeer else { return }
+            guard AppSettings.shared.outputMode(for: selectedPeer).sendsKeyboard else { return }
             self.ub500.sendKeyboard(report, to: selectedPeer)
         }
         inputCapture.onMouse = { [weak self] buttons, dx, dy, wheel in
             guard let self, let selectedPeer else { return }
+            guard AppSettings.shared.outputMode(for: selectedPeer).sendsMouse else { return }
             let settings = AppSettings.shared.mouseSettings(for: selectedPeer)
             let report = HIDMouseReport(buttons: buttons, dx: dx, dy: dy, wheelDelta: wheel, settings: settings)
             self.ub500.sendMouse(report, to: selectedPeer, settings: settings)
         }
         inputCapture.onMouseButton = { [weak self] report in
             guard let self, let selectedPeer else { return }
+            guard AppSettings.shared.outputMode(for: selectedPeer).sendsMouse else { return }
             let settings = AppSettings.shared.mouseSettings(for: selectedPeer)
             self.ub500.sendMouse(report, to: selectedPeer, settings: settings)
         }
@@ -127,13 +136,22 @@ final class StatusBarApp: NSObject, NSApplicationDelegate {
         self.peers = peers.sorted()
         connectedPeers = Set(ub500?.connectedAddresses() ?? [])
         hidReadyPeers = Set(ub500?.hidReadyAddresses() ?? [])
-        if let selectedPeer, !self.peers.contains(selectedPeer) {
-            switchToMac(label: "Mac")
+        if let selectedPeer {
+            if hidReadyPeers.contains(selectedPeer) {
+                selectedPeerWasHIDReady = true
+            } else if selectedPeerWasHIDReady {
+                switchToMac(label: "切断")
+                return
+            } else if !self.peers.contains(selectedPeer) {
+                switchToMac(label: "Mac")
+                return
+            }
         }
         settingsWindow.update(devices: self.peers, connected: Array(connectedPeers), hidReady: Array(hidReadyPeers))
         statusItem.button?.toolTip = "shareMK — \(status)"
         let menu = NSMenu()
-        let macItem = NSMenuItem(title: selectedPeer == nil ? "送信先: Mac" : "Macへ戻す（⌃⌥⌘1）",
+        let hotKeyHint = AppSettings.shared.hotKeyMode.menuHintPrefix
+        let macItem = NSMenuItem(title: selectedPeer == nil ? "送信先: Mac" : "Macへ戻す（\(hotKeyHint)1）",
                                  action: #selector(selectMac), keyEquivalent: "")
         macItem.target = self
         menu.addItem(macItem)
@@ -143,7 +161,7 @@ final class StatusBarApp: NSObject, NSApplicationDelegate {
             let display = "\(AppSettings.shared.displayName(for: peer)) (\(peer))"
             let active = ub500?.activeHIDAddress() == peer
             let prefix = selectedPeer == peer ? (active ? "送信中" : "選択中") : (connected ? "子機\(index + 2)" : "未接続")
-            let item = NSMenuItem(title: "\(prefix): \(display)（⌃⌥⌘\(index + 2)）",
+            let item = NSMenuItem(title: "\(prefix): \(display)（\(hotKeyHint)\(index + 2)）",
                                   action: #selector(selectPeerFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = peer
@@ -183,16 +201,23 @@ final class StatusBarApp: NSObject, NSApplicationDelegate {
         releaseCurrentInput()
         ub500.prepareSwitch(to: address)
         selectedPeer = address
-        inputCapture.setChildMode(true)
+        selectedPeerWasHIDReady = hidReadyPeers.contains(address)
+        inputCapture.setChildMode(true, outputMode: AppSettings.shared.outputMode(for: address))
         osd.show(AppSettings.shared.displayName(for: address), persistent: true)
         let resolvedSlot = slot ?? ((peers.firstIndex(of: address) ?? 0) + 2)
         log.record("TARGET_SWITCH slot=\(resolvedSlot) peer=\(address)")
         updateMenu(peers: peers, status: "UB500 HID接続中")
     }
 
+    private func refreshInputModeForSelectedPeer() {
+        guard let selectedPeer else { return }
+        inputCapture.setChildMode(true, outputMode: AppSettings.shared.outputMode(for: selectedPeer))
+    }
+
     private func switchToMac(label: String) {
         releaseCurrentInput()
         selectedPeer = nil
+        selectedPeerWasHIDReady = false
         ub500.cancelReconnect()
         inputCapture.setChildMode(false)
         osd.show(label, persistent: false)
